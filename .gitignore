@@ -1,0 +1,29 @@
+# 构建产物
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+
+# 模型文件
+*.engine
+*.onnx
+models/*.engine
+models/*.onnx
+
+# 本地备份
+*.bak-*
+*.orig
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 本地临时目录
+tmp/
+
+src/demo*.cpp
+
+# IDE 缓存
+.marscode/
