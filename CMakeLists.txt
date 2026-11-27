@@ -27,6 +27,7 @@ include_directories(${PROJECT_SOURCE_DIR}/common/)
 # 找OpenCV
 find_package(OpenCV REQUIRED)
 
+
 # 头文件搜索路径
 include_directories(
     ${OpenCV_INCLUDE_DIRS}
@@ -46,15 +47,21 @@ add_executable(client
 )
 
 # 链接OpenCV，httplib不需要链接库
-target_link_libraries(server
+
+target_include_directories(server PRIVATE
+    /usr/local/cuda-11.4/nsight-systems-2021.2.4/target-linux-x64/nvtx/include
+)
+target_link_libraries(server PRIVATE
     ${OpenCV_LIBS}
     pthread
     nvinfer
     cudart
+    dl
 )
 
 # client 不依赖 CUDA / TensorRT
-target_link_libraries(client
+target_link_libraries(client PRIVATE
     ${OpenCV_LIBS}
     pthread
 )
+

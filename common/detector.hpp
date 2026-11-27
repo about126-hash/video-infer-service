@@ -8,7 +8,7 @@
 #include "postprocess.h"
 #include "preprocess.h"
 #include "config.h"
-
+#include <nvtx3/nvToolsExt.h>
 
 template<class T>
 class Detector
@@ -81,7 +81,10 @@ public:
         CUDA_CHECK(cudaMalloc((void**)&this->gpu_buffers[0], this->param.BatchSize * this->param.MaxInputImageSize * sizeof(float)));
         CUDA_CHECK(cudaMalloc((void**)&this->gpu_buffers[1], this->param.TensorOutputSize * sizeof(float)));
         
-        this->cpu_output_buffer = new float[this->param.BatchSize * this->param.TensorOutputSize];
+        //new 方式分配堆区内存
+        // this->cpu_output_buffer = new float[this->param.BatchSize * this->param.TensorOutputSize];
+        //分配pinned host内存，cpu->gpu , gpu->cpu更快
+        CUDA_CHECK(cudaHostAlloc((void**)&this->cpu_output_buffer, this->param.BatchSize * this->param.TensorOutputSize * sizeof(float), cudaHostAllocDefault));
         
         std::cout<<"初始化完成"<<std::endl;
     }
@@ -110,9 +113,15 @@ public:
     {
         this->image.release();
         this->image = input_image.clone();
+        nvtxRangePushA("preprocess");
         this->Preprocess();
+        nvtxRangePop();
+        nvtxRangePushA("infer");
         this->Infer();
+        nvtxRangePop();
+        nvtxRangePushA("postprocess");
         this->Afterprocess(output_data);
+        nvtxRangePop();
 
     }
 
@@ -122,7 +131,8 @@ public:
         cudaStreamDestroy(stream);
         CUDA_CHECK(cudaFree(gpu_buffers[0]));
         CUDA_CHECK(cudaFree(gpu_buffers[1]));
-        delete[] cpu_output_buffer;
+        //释放pinned host内存
+        CUDA_CHECK(cudaFreeHost(this->cpu_output_buffer));
         cuda_preprocess_destroy(this->img_buffer_host, this->img_buffer_device);
         this->context->destroy();
         this->engine->destroy();

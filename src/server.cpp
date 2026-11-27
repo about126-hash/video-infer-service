@@ -11,6 +11,9 @@
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <future>
+#include <nvtx3/nvToolsExt.h>
+
+
 const std::vector<std::string> coco_class_names = {
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
     "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
@@ -118,7 +121,7 @@ int main(int argc, char** argv)
     }
     if (port <= 0 || port > 65535) port = 8080;
 
-    BlockQueue<Task> queue(10,20);
+    BlockQueue<Task> queue(10,200);
     BlockQueue<cv::Mat> show_queue(5,20);
 
     std::atomic<bool>running{true};
@@ -133,18 +136,24 @@ int main(int argc, char** argv)
             std::cout << "worker 线程 id: " << std::this_thread::get_id() << std::endl;
 
             std::unique_ptr<Detector<std::vector<Detection>>> det(new v8_Detector());
+            std::vector<Detection> raw;
+
             det->Init(EngineV8);
+
+            cv::Mat black_buf(cv::Size(640,640), CV_8UC3, cv::Scalar(0,0,0));
+            det->Run(black_buf, raw);
 
             Task task;
             while (running.load())
             {
+                raw.clear();
+
                 if(!queue.Pop(task))
                 {
                     continue;
                 }
                 try
                 {
-                    std::vector<Detection> raw;
                     det->Run(task.image, raw);
 
                     std::vector<Box> boxes;
@@ -215,7 +224,10 @@ int main(int argc, char** argv)
         auto t_start = std::chrono::steady_clock::now();
 
         cv::Mat buffer(1, req.body.size(), CV_8UC1, (void*)req.body.data());
+
+        nvtxRangePushA("imdecode");
         cv::Mat image = cv::imdecode(buffer, cv::IMREAD_COLOR);
+        nvtxRangePop();
 
         if(image.empty())
         {
@@ -227,6 +239,9 @@ int main(int argc, char** argv)
         Task task;
         task.image = image;
         auto fut = task.GetFuture();
+
+        nvtxRangePushA("push+wait");        
+
         if (!queue.Push(std::move(task)))
         {
             res.status = 503;
@@ -253,6 +268,9 @@ int main(int argc, char** argv)
             res.set_content(nlohmann::json{{"code", -500}, {"msg", e.what()}}.dump(), "application/json");
             return;
         }
+
+        nvtxRangePop();
+
 
         //构建json
         nlohmann::json resp;
@@ -282,7 +300,7 @@ int main(int argc, char** argv)
         // cv::imshow("recv_img", image);
         // cv::waitKey(1);
 
-        show_queue.Push(std::move(image));
+        // show_queue.Push(std::move(image));
 
 
         auto t_end = std::chrono::steady_clock::now();
