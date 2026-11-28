@@ -40,6 +40,7 @@ add_executable(server
     common/postprocess.cpp
     common/preprocess.cu
     common/common.hpp
+    common/param.cpp
 )
 
 add_executable(client

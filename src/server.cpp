@@ -6,12 +6,31 @@
 #include "common.hpp"
 #include <vector>
 #include "detector.hpp"
-#include "config.h"
+#include "config.hpp"
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <future>
 #include <nvtx3/nvToolsExt.h>
+#include <param.h>
+#include <csignal>
+
+class NvtxRange
+{
+public:
+    explicit NvtxRange(const char* name) { nvtxRangePushA(name); }
+    ~NvtxRange() { nvtxRangePop(); }
+
+    NvtxRange(const NvtxRange&) = delete;            // 禁止拷贝
+    NvtxRange& operator=(const NvtxRange&) = delete; // 否则两份对象析构两次 pop
+};
+
+//用DeadlineExceeded替代std::runtime_error("deadline exceeded")，这种形式更严格，类型明确吗
+struct DeadlineExceeded : std::runtime_error
+{
+    DeadlineExceeded() : std::runtime_error("deadline exceeded") {}
+};
+
 
 
 const std::vector<std::string> coco_class_names = {
@@ -47,7 +66,7 @@ public:
     bool Push(T&& item)
     {
         std::unique_lock<std::mutex> lock(mtx_);
-        if(!notFull_.wait_for(lock, std::chrono::milliseconds(20), [this] { return q_.size() < cap_ || done_; }))
+        if(!notFull_.wait_for(lock, std::chrono::milliseconds(timeout_ms_), [this] { return q_.size() < cap_ || done_; }))
         {
             return false; 
         }
@@ -98,28 +117,41 @@ private:
 struct Task
 {
     cv::Mat image;
+    std::chrono::steady_clock::time_point deadline;
     std::promise<std::vector<Box>> promise;
 
     std::future<std::vector<Box>> GetFuture() { return promise.get_future(); }
 };
 
-int main(int argc, char** argv)
-{
-    if (argc > 1 && std::string(argv[1]) == "-h")
-    {
-        std::cout << "用法: " << argv[0] << " [worker数=2] [端口=8080]\n"
-                  << "示例: " << argv[0] << " 2 8080\n";
-        return 0;
-    }
 
-    int worker_count = (argc > 1) ? atoi(argv[1]) : 0;
-    int port         = (argc > 2) ? atoi(argv[2]) : 8080;
+httplib::Server* g_svr = nullptr;
+
+
+void signalHandler(int signum) {
+    //终止掉原有的svr阻塞，.linsen()结束后，会继续执行资源释放类操作，然后结束main()
+    if(g_svr) g_svr->stop();
+}
+
+int main()
+{
+    //signal csignal库中用于处理信号的核心函数，可为特别信号指定处理函数，如SIGINT(程序中断信号(ctrl+c)),SIGTERM(程序终止信号(kill))等
+    //param1 信号类型  param2 信号处理函数指针
+    //捕获ctrl+c信号，覆盖原有的程序终止行为
+    std::signal(SIGINT, signalHandler);
+
+
+    readParameters("/home/lhl/cpp/Video_infer_service/config/config.yaml");
+ 
     if (worker_count <= 0)
     {
-        std::cout << "默认线程数为2" << std::endl;
-        worker_count = 2;
+        std::cout<<"线程数配置错误，程序退出"<<std::endl;
+        return 0;
     }
-    if (port <= 0 || port > 65535) port = 8080;
+    if (port <= 0 || port > 65535) 
+    {
+        std::cout<<"端口配置错误，程序退出"<<std::endl;
+        return 0;
+    };
 
     BlockQueue<Task> queue(10,200);
     BlockQueue<cv::Mat> show_queue(5,20);
@@ -131,9 +163,10 @@ int main(int argc, char** argv)
 
     for(int i = 0; i < worker_count; i++)
     {
-        workers.emplace_back([&queue,&running]
+        workers.emplace_back([i,&queue,&running,&EngineV8]
         {
-            std::cout << "worker 线程 id: " << std::this_thread::get_id() << std::endl;
+            int worker_id = i;
+            std::printf("worker 线程 id: %d\n", worker_id);
 
             std::unique_ptr<Detector<std::vector<Detection>>> det(new v8_Detector());
             std::vector<Detection> raw;
@@ -152,6 +185,15 @@ int main(int argc, char** argv)
                 {
                     continue;
                 }
+
+                // 防止积压，任务超时
+                if (std::chrono::steady_clock::now() > task.deadline)
+                {
+                    task.promise.set_exception(
+                        std::make_exception_ptr(DeadlineExceeded{}));
+                    continue;
+                }
+
                 try
                 {
                     det->Run(task.image, raw);
@@ -172,7 +214,7 @@ int main(int argc, char** argv)
                 }
             }
 
-            std::cout << "worker 退出（队列已关闭且取空）" << std::endl;
+            std::printf("worker%d 退出\n", worker_id);
 
         });
     }
@@ -194,6 +236,7 @@ int main(int argc, char** argv)
 
 
     httplib::Server svr;
+    g_svr = &svr;
 
     svr.Post("/infer", [&queue,&show_queue](const httplib::Request& req, httplib::Response& res)
     {
@@ -225,9 +268,11 @@ int main(int argc, char** argv)
 
         cv::Mat buffer(1, req.body.size(), CV_8UC1, (void*)req.body.data());
 
-        nvtxRangePushA("imdecode");
-        cv::Mat image = cv::imdecode(buffer, cv::IMREAD_COLOR);
-        nvtxRangePop();
+        cv::Mat image;
+        {
+            NvtxRange r("imdecode");
+            image = cv::imdecode(buffer, cv::IMREAD_COLOR);
+        }
 
         if(image.empty())
         {
@@ -238,38 +283,47 @@ int main(int argc, char** argv)
 
         Task task;
         task.image = image;
+        
+        //任务超时时间>200ms,则为超时
+        task.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
         auto fut = task.GetFuture();
 
-        nvtxRangePushA("push+wait");        
-
-        if (!queue.Push(std::move(task)))
-        {
-            res.status = 503;
-            res.set_content(R"({"code":-2,"msg":"queue closed"})", "application/json");
-            return;
-        }
-
-        //wait_for()判断超时,get()取结果
-        if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::timeout)
-        {
-            res.status = 503;
-            res.set_content(R"({"code":-2,"msg":"timeout, please try again later"})", "application/json");
-            return;
-        }
-
         std::vector<Box> boxes;
-        try
         {
-            boxes = fut.get();   //worker内异常会在这里重新抛出
-        }
-        catch (const std::exception& e)
-        {
-            res.status = 500;
-            res.set_content(nlohmann::json{{"code", -500}, {"msg", e.what()}}.dump(), "application/json");
-            return;
-        }
+            NvtxRange r("push+wait");
 
-        nvtxRangePop();
+            if (!queue.Push(std::move(task)))
+            {
+                res.status = 503;
+                res.set_content(R"({"code":-2,"msg":"queue closed"})", "application/json");
+                return;
+            }
+
+            //wait_for()判断超时,get()取结果
+            if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::timeout)
+            {
+                res.status = 504;
+                res.set_content(R"({"code":-504,"msg":"timeout, please try again later"})", "application/json");
+                return;
+            }
+
+            try
+            {
+                boxes = fut.get();   //wait_for 已确认 ready，这里不阻塞；worker 内异常在此重新抛出
+            }
+            catch (const DeadlineExceeded&)
+            {
+                res.status = 504;
+                res.set_content(R"({"code":-504,"msg":"request expired in queue"})", "application/json");
+                return;
+            }
+            catch (const std::exception& e)
+            {
+                res.status = 500;
+                res.set_content(nlohmann::json{{"code", -500}, {"msg", e.what()}}.dump(), "application/json");
+                return;
+            }
+        }
 
 
         //构建json
@@ -300,7 +354,7 @@ int main(int argc, char** argv)
         // cv::imshow("recv_img", image);
         // cv::waitKey(1);
 
-        // show_queue.Push(std::move(image));
+        show_queue.Push(std::move(image));
 
 
         auto t_end = std::chrono::steady_clock::now();
@@ -338,12 +392,24 @@ int main(int argc, char** argv)
 
     std::cout << "服务启动: 0.0.0.0:" << port << "（worker数=" << worker_count << "）" << std::endl;
     svr.listen("0.0.0.0", port);
+
+    //在程序内部手动模拟信号
+    // raise(SIGINT);
+
+
     queue.Stop();
+    show_queue.Stop();
     running.store(false);
     for (auto& w : workers)
     {
         if (w.joinable()) w.join();
     }
     show_thread.join();
+    std::cout<<"程序退出"<<std::endl;
+
+    // SIGINT：表示程序接收到中断信号，通常由用户按下Ctrl+C触发。
+    // 此信号用于通知程序用户希望中断当前操作。例如，在命令行程序中，用户按下Ctrl+C时，程序会收到SIGINT信号，可以捕获此信号以优雅地关闭程序。
+
+
     return 0;
 }

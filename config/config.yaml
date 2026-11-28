@@ -1,0 +1,36 @@
+%YAML:1.0
+
+---
+#全局参数
+worker_count: 4
+port: 8000
+
+
+#参数配置
+v8_Device : 0
+v8_ClsNum : 80
+v8_InputH : 640
+v8_InputW : 640
+v8_ConfThresh : 0.3
+v8_IouThresh : 0.3
+v8_MaxInputImageSize : 1228800 #需要手动进行计算，输入进入的最大图像尺寸
+v8_InputTensorName : images
+v8_OutputTensorName : output0
+v8_engine_path : /home/lhl/cpp/Video_infer_service/models/yolov8n_fp32.engine
+v8_MaxNumOutputBbox : 8400
+v8_BatchSize : 1
+
+
+# #参数配置
+# v8_Device : 0
+# v8_ClsNum : 80
+# v8_InputH : 640
+# v8_InputW : 640
+# v8_ConfThresh : 0.3
+# v8_IouThresh : 0.3
+# v8_MaxInputImageSize : 1228800 #需要手动进行计算，输入进入的最大图像尺寸
+# v8_InputTensorName : images
+# v8_OutputTensorName : output0
+# v8_engine_path : /home/lhl/cpp/Video_infer_service/models/yolov8n_fp32.engine
+# v8_MaxNumOutputBbox : 8400
+# v8_BatchSize : 1

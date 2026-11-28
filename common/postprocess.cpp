@@ -1,6 +1,6 @@
 #include "postprocess.h"
 #include "utils.h"
-#include "config.h"
+#include "config.hpp"
 
 
 cv::Rect get_rect(cv::Mat& img, float bbox[4] ,int kInputW,int kInputH) {

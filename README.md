@@ -15,10 +15,11 @@
 ## 结构
 
 ```
-src/server.cpp    服务端：HTTP + 有界队列 + N 个 TensorRT worker + 显示线程
+src/server.cpp    服务端：HTTP + 有界队列 + N 个 TensorRT worker + 显示线程 + 超时/优雅退出
 src/client.cpp    客户端：抓帧线程 → 队列（容量 1）→ 发送线程，长连接
 src/httplib.h     cpp-httplib 0.67.0
-common/           detector / preprocess.cu / postprocess / config.h
+common/           detector / preprocess.cu / postprocess / config.hpp / param
+config/           config.yaml：worker 数、端口、engine 路径等全部参数
 models/           引擎放这里（*.engine 不进仓库）
 ```
 
@@ -48,17 +49,20 @@ make -j$(nproc)
 客户端的编译不依赖 CUDA 和 TensorRT，只需要 OpenCV。
 
 ```bash
-# 引擎路径写在 common/config.h 的 EngineV8 里，默认 models/yolov8n_fp32.engine
-./build/server 4 8080                     # worker 数、端口
+# 所有参数都在 config/config.yaml：worker_count、port、engine 路径、阈值等
+# 默认 4 个 worker、监听 8000；改参数后重新启动即可，不需要重新编译
+./build/server
 
-./build/client 192.168.1.100 8080 0 85    # 服务端 IP、端口、摄像头编号、JPEG 质量
+./build/client 192.168.1.100 8000 0 85    # 服务端 IP、端口、摄像头编号、JPEG 质量
 ```
+
+服务端启动时读取 `config/config.yaml`，`worker_count` 或 `port` 不合法会打印错误并退出。Ctrl+C 会优雅退出：等在途请求处理完，worker 全部结束后再退出。
 
 ## 接口
 
 ```bash
 curl -X POST -H 'Content-Type: image/jpeg' \
-     --data-binary @test.jpg http://127.0.0.1:8080/infer
+     --data-binary @test.jpg http://127.0.0.1:8000/infer
 ```
 
 ```json
@@ -70,9 +74,13 @@ curl -X POST -H 'Content-Type: image/jpeg' \
 |---|---|
 | body 为空 | 400 |
 | 图片解码失败 | 400 |
-| 队列满或已关闭 | 503 |
-| 推理超时 | 503 |
+| 队列满或被关闭 | 503 / `code:-2` |
+| 排队超时（任务取出时已过期） | 504 / `code:-504` |
+| 服务端 2s 内没算完 | 504 / `code:-504` |
+| 推理内部异常 | 500 / `code:-500` |
 | 没带 Content-Type | 413（httplib 的行为） |
+
+每个请求带一个 200ms 的排队期限：任务在队列里等待超过 200ms 就直接丢弃、不再推理，避免积压的过期任务把新请求堵在后面。
 
 ## 实测数据
 
@@ -126,6 +134,7 @@ worker 从 1 加到 4 吞吐提升约 2 倍，加到 8 反而下降（CUDA conte
 
 - CUDA 11.4 不原生支持新架构的卡，第一次推理会触发 PTX JIT，多等 60~80ms，之后恢复正常。
 - engine 文件和 TensorRT 版本、GPU 架构绑定，换机器要重新构建。
+- `config/config.yaml` 里的 `v8_engine_path` 是绝对路径，换机器要改成实际位置；服务端只从该文件读配置，不解析命令行参数。
 - 用 curl 压测时必须加 `-H 'Expect:'`。curl 对超过 1KB 的 POST 会自动加 `Expect: 100-continue`，当前 httplib 版本不能及时回应，会白等一段时间。
 - 单张边缘样本上，换 JPEG 质量会让检测结果在置信度阈值附近来回跳，需要用真实的业务图批量验证。
 

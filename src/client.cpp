@@ -88,9 +88,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    //显式指定分辨率
-    cap.set(cv::CAP_PROP_FRAME_WIDTH,  640);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+    //指定分辨率
+    cap.set(cv::CAP_PROP_FRAME_WIDTH,  1280/2);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 960/2);
     cap.set(cv::CAP_PROP_FPS,          25);
     std::cout << "摄像头: " << cap.get(cv::CAP_PROP_FRAME_WIDTH) << "x"
               << cap.get(cv::CAP_PROP_FRAME_HEIGHT) << " @"

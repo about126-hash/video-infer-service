@@ -7,7 +7,7 @@
 #include "cuda_utils.h"
 #include "postprocess.h"
 #include "preprocess.h"
-#include "config.h"
+#include "config.hpp"
 #include <nvtx3/nvToolsExt.h>
 
 template<class T>
@@ -55,7 +55,6 @@ public:
 
         CUDA_CHECK(cudaStreamCreate(&this->stream));
         cuda_preprocess_init(this->param.MaxInputImageSize , this->img_buffer_host, this->img_buffer_device);
-        std::cout<<111<<std::endl;
 
         assert(this->engine->getNbBindings() == 2);
         // In order to bind the buffers, we need to know the names of the input and output tensors.
@@ -63,7 +62,6 @@ public:
         const int inputIndex = engine->getBindingIndex(this->param.InputTensorName);
         const int outputIndex = engine->getBindingIndex(this->param.OutputTensorName);
 
-        std::cout<<222<<std::endl;
         size_t n = 1;
         nvinfer1::Dims out_dims = engine->getBindingDimensions(outputIndex);
         for (int i = 0; i < out_dims.nbDims; i++)
@@ -72,8 +70,6 @@ public:
             n *= d;
         }
         this->param.TensorOutputSize = n;
-
-        std::cout<<333<<std::endl;
 
         assert(inputIndex == 0);
         assert(outputIndex == 1);
